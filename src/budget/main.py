@@ -10,11 +10,12 @@ So right now a simple single python script will do!
 """
 import itertools
 import random
-from collections import defaultdict
+from collections import defaultdict, OrderedDict
 from datetime import datetime, timedelta
 
 import pandas as pd
 from bokeh.plotting import figure, show
+from bokeh.models import Span
 
 
 def create_random_hex_color() -> str:
@@ -23,8 +24,15 @@ def create_random_hex_color() -> str:
     return "#" + "".join(f"{rand_smallint():02X}" for _ in range(3)).lower()
 
 
-def main(file_to_load: str, earliest_date: datetime = None) -> None:
+def main(
+    file_to_load: str,
+    earliest_date: datetime = None,
+    budgeted_income: int = None,
+    budgeted_essentials: int = None,
+    budgeted_nonessentials: int = None,
+) -> None:
     """The main program that will spit out the graphs"""
+    total_budgeted_expenses = (budgeted_essentials or 0) + (budgeted_nonessentials or 0)
     df = pd.read_csv(file_to_load)
     # Remove transfers because that is just credit card payments and moving $
     # from checking to saving or vice versa
@@ -71,33 +79,57 @@ def main(file_to_load: str, earliest_date: datetime = None) -> None:
         else essential_labels[1]
     )
 
+    # Income chart
+    income_df = df[df.adjusted_amount > 0]
+    income_totals = income_df.groupby(["Category", "YearMonth"]).adjusted_amount.sum()
+    income, income_categories = create_data_mapping(
+        categories, year_months, income_totals, positives=True
+    )
+    income_plot = make_stacked_bar_chart(
+        income, year_months, income_categories, "Income by category by month", line=budgeted_income
+    )
+    show(income_plot)
+
     # Splits out costs by all, essential vs non essential, and the sub charts
     # just for those essential/non-essential categories
     cost_df = df[df.adjusted_amount < 0]
     cost_totals = cost_df.groupby(["Category", "YearMonth"]).adjusted_amount.sum()
-    cost = create_data_mapping(categories, year_months, cost_totals, positives=False)
+    cost, sorted_cost_categories = create_data_mapping(
+        categories, year_months, cost_totals, positives=False
+    )
     cost_plot = make_stacked_bar_chart(
-        cost, year_months, categories, "All Costs by category by month"
+        cost,
+        year_months,
+        sorted_cost_categories,
+        "All Costs by category by month",
+        line=total_budgeted_expenses,
     )
     show(cost_plot)
 
     essentials_breakout_totals = cost_df.groupby(["essentials", "YearMonth"]).adjusted_amount.sum()
-    essentials_breakout_cost = create_data_mapping(
+    essentials_breakout_cost, sorted_eb_cost_categories = create_data_mapping(
         essential_labels, year_months, essentials_breakout_totals, positives=False
     )
     essentials_breakout_cost_plot = make_stacked_bar_chart(
         essentials_breakout_cost,
         year_months,
-        essential_labels,
+        sorted_eb_cost_categories,
         "Essential Vs Non-Essential by month",
+        line=total_budgeted_expenses,
     )
     show(essentials_breakout_cost_plot)
 
     essentials_df = cost_df[cost_df.essentials == essential_labels[0]]
     essentials_totals = essentials_df.groupby(["Category", "YearMonth"]).adjusted_amount.sum()
-    essentials = create_data_mapping(categories, year_months, essentials_totals, positives=False)
+    essentials, essential_categories = create_data_mapping(
+        categories, year_months, essentials_totals, positives=False
+    )
     essentials_plot = make_stacked_bar_chart(
-        essentials, year_months, categories, "Essential Breakout by month"
+        essentials,
+        year_months,
+        essential_categories,
+        "Essential Breakout by month",
+        line=budgeted_essentials,
     )
     show(essentials_plot)
 
@@ -105,28 +137,22 @@ def main(file_to_load: str, earliest_date: datetime = None) -> None:
     non_essentials_totals = non_essentials_df.groupby(
         ["Category", "YearMonth"]
     ).adjusted_amount.sum()
-    non_essentials = create_data_mapping(
+    non_essentials, non_essential_categories = create_data_mapping(
         categories, year_months, non_essentials_totals, positives=False
     )
     non_essentials_plot = make_stacked_bar_chart(
-        non_essentials, year_months, categories, "Non-Essential Breakout by month"
+        non_essentials,
+        year_months,
+        non_essential_categories,
+        "Non-Essential Breakout by month",
+        line=budgeted_nonessentials,
     )
     show(non_essentials_plot)
-
-    # Income chart
-    income_df = df[df.adjusted_amount > 0]
-    income_totals = income_df.groupby(["Category", "YearMonth"]).adjusted_amount.sum()
-    income = create_data_mapping(categories, year_months, income_totals, positives=True)
-    income_plot = make_stacked_bar_chart(
-        income, year_months, categories, "Income by category by month"
-    )
-    show(income_plot)
     return df
 
 
 def create_data_mapping(categories, year_months, totals, positives=False):
     data = defaultdict(list)
-    data.update({"year-months": year_months})
     for pair in itertools.product(year_months, categories):
         year_month = pair[0]
         category = pair[1]
@@ -140,10 +166,19 @@ def create_data_mapping(categories, year_months, totals, positives=False):
                 data[category].append(0)
         except KeyError:
             data[category].append(0)
-    return data
+    sorted_by_total = OrderedDict(
+        sorted(
+            [(k, v) for k, v in data.items()],
+            key=lambda row: sum(row[1]),
+            reverse=True,
+        )
+    )
+    sorted_categories = list(sorted_by_total.keys())
+    sorted_by_total.update({"year-months": year_months})
+    return sorted_by_total, sorted_categories
 
 
-def make_stacked_bar_chart(data, year_months, categories, title):
+def make_stacked_bar_chart(data, year_months, categories, title, line=None):
     plot = figure(
         x_range=year_months,
         title=title,
@@ -161,6 +196,9 @@ def make_stacked_bar_chart(data, year_months, categories, title):
     plot.xgrid.grid_line_color = None
     plot.axis.minor_tick_line_color = None
     plot.outline_line_color = None
+    if line:
+        horizontal_line = Span(location=line, dimension="width", line_color="red", line_width=3)
+        plot.renderers.extend([horizontal_line])
     return plot
 
 
@@ -168,7 +206,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("file_to_upload")
+    parser.add_argument("file_to_upload", help="The location of the mint transactions.csv to use")
     three_months_ago = datetime.now() - timedelta(days=90)
     start_of_three_months_ago = datetime(
         three_months_ago.year,
@@ -180,6 +218,34 @@ if __name__ == "__main__":
         type=lambda x: datetime.fromisoformat(x),
         required=False,
         default=start_of_three_months_ago,
+        help="The earliest date to include in the charts, defaults to the start of 3 months ago",
+    )
+    parser.add_argument(
+        "--budgeted_income",
+        type=int,
+        required=False,
+        default=None,
+        help="The amount of income you budgeted for",
+    )
+    parser.add_argument(
+        "--budgeted_essentials",
+        type=int,
+        required=False,
+        default=None,
+        help="The amount of essential expenses you budgeted for",
+    )
+    parser.add_argument(
+        "--budgeted_nonessentials",
+        type=int,
+        required=False,
+        default=None,
+        help="The amount of non-essential expenses you budgeted for",
     )
     args = parser.parse_args()
-    main(args.file_to_upload, args.earliest_date)
+    main(
+        args.file_to_upload,
+        args.earliest_date,
+        args.budgeted_income,
+        args.budgeted_essentials,
+        args.budgeted_nonessentials,
+    )
