@@ -14,7 +14,8 @@ from collections import defaultdict, OrderedDict
 from datetime import datetime, timedelta
 
 import pandas as pd
-from bokeh.plotting import figure, show
+from bokeh.plotting import figure, output_file, save, show
+from bokeh.resources import INLINE
 from bokeh.models import Span
 
 
@@ -34,9 +35,9 @@ def main(
     """The main program that will spit out the graphs"""
     total_budgeted_expenses = (budgeted_essentials or 0) + (budgeted_nonessentials or 0)
     df = pd.read_csv(file_to_load)
-    # Remove transfers because that is just credit card payments and moving $
-    # from checking to saving or vice versa
-    df = df[df.Category != "Transfer"]
+
+    df = filter_out_noise(df)
+
     df["PyDate"] = df.Date.map(lambda d: datetime.strptime(d, "%m/%d/%Y"))
     if earliest_date:
         pass
@@ -86,9 +87,13 @@ def main(
         categories, year_months, income_totals, positives=True
     )
     income_plot = make_stacked_bar_chart(
-        income, year_months, income_categories, "Income by category by month", line=budgeted_income
+        income,
+        year_months,
+        income_categories,
+        "Income by category by month",
+        line=budgeted_income,
     )
-    show(income_plot)
+    save_html_and_show_graphs(income_plot, "./income.html", "Income")
 
     # Splits out costs by all, essential vs non essential, and the sub charts
     # just for those essential/non-essential categories
@@ -104,9 +109,11 @@ def main(
         "All Costs by category by month",
         line=total_budgeted_expenses,
     )
-    show(cost_plot)
+    save_html_and_show_graphs(cost_plot, "./cost.html", "Costs")
 
-    essentials_breakout_totals = cost_df.groupby(["essentials", "YearMonth"]).adjusted_amount.sum()
+    essentials_breakout_totals = cost_df.groupby(
+        ["essentials", "YearMonth"]
+    ).adjusted_amount.sum()
     essentials_breakout_cost, sorted_eb_cost_categories = create_data_mapping(
         essential_labels, year_months, essentials_breakout_totals, positives=False
     )
@@ -117,10 +124,16 @@ def main(
         "Essential Vs Non-Essential by month",
         line=total_budgeted_expenses,
     )
-    show(essentials_breakout_cost_plot)
+    save_html_and_show_graphs(
+        essentials_breakout_cost_plot,
+        "./essentials_breakout.html",
+        "Essentials Breakout",
+    )
 
     essentials_df = cost_df[cost_df.essentials == essential_labels[0]]
-    essentials_totals = essentials_df.groupby(["Category", "YearMonth"]).adjusted_amount.sum()
+    essentials_totals = essentials_df.groupby(
+        ["Category", "YearMonth"]
+    ).adjusted_amount.sum()
     essentials, essential_categories = create_data_mapping(
         categories, year_months, essentials_totals, positives=False
     )
@@ -131,7 +144,7 @@ def main(
         "Essential Breakout by month",
         line=budgeted_essentials,
     )
-    show(essentials_plot)
+    save_html_and_show_graphs(essentials_plot, "./essentials.html", "Essentials")
 
     non_essentials_df = cost_df[cost_df.essentials == essential_labels[1]]
     non_essentials_totals = non_essentials_df.groupby(
@@ -147,7 +160,42 @@ def main(
         "Non-Essential Breakout by month",
         line=budgeted_nonessentials,
     )
-    show(non_essentials_plot)
+    save_html_and_show_graphs(
+        non_essentials_plot, "./non_essentials.html", "Non Essentials"
+    )
+    return df
+
+
+def save_html_and_show_graphs(plot, filename, title):
+    output_file(filename=filename, title=title)
+    save(plot, filename=filename, resources=INLINE)
+    show(plot)
+
+
+def filter_out_noise(df):
+    """
+    Description
+    -----------
+    Removing the category and transaction type pairs that are not useful to
+    see in the analysis built by this program.
+
+    Params
+    ------
+    :df: pd.DataFrame
+    The input dataframe
+
+    Return
+    ------
+    pd.DataFrame
+    The filtered dataframe with the noise removed
+    """
+    # Remove transfers because that is just credit card payments and moving $
+    # from checking to saving or vice versa
+    df = df[(df.Category != "Transfer")]
+    df = df[df.Category != "Credit Card Payment"]
+
+    # Remove these because they are just payments on the mortgage
+    df = df[(df.Category != "Loan Payment") | (df["Transaction Type"] != "credit")]
     return df
 
 
@@ -197,7 +245,9 @@ def make_stacked_bar_chart(data, year_months, categories, title, line=None):
     plot.axis.minor_tick_line_color = None
     plot.outline_line_color = None
     if line:
-        horizontal_line = Span(location=line, dimension="width", line_color="red", line_width=3)
+        horizontal_line = Span(
+            location=line, dimension="width", line_color="red", line_width=3
+        )
         plot.renderers.extend([horizontal_line])
     return plot
 
@@ -206,7 +256,9 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("file_to_upload", help="The location of the mint transactions.csv to use")
+    parser.add_argument(
+        "file_to_upload", help="The location of the mint transactions.csv to use"
+    )
     three_months_ago = datetime.now() - timedelta(days=90)
     start_of_three_months_ago = datetime(
         three_months_ago.year,
